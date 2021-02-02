@@ -1,0 +1,1162 @@
+%% LyX 2.2.3 created this file.  For more info, see http://www.lyx.org/.
+%% Do not edit unless you really know what you are doing.
+\documentclass[10pt,english,ngerman]{article}
+\usepackage{ae,aecompl}
+\usepackage[T1]{fontenc}
+\usepackage[latin9]{inputenc}
+\usepackage[a4paper]{geometry}
+\geometry{verbose,tmargin=3.25cm,bmargin=3.25cm,lmargin=2cm,rmargin=2cm}
+\setlength{\parindent}{0bp}
+\usepackage{calc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{setspace}
+\usepackage{esint}
+
+\makeatletter
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Textclass specific LaTeX commands.
+\newenvironment{lyxcode}
+{\par\begin{list}{}{
+\setlength{\rightmargin}{\leftmargin}
+\setlength{\listparindent}{0pt}% needed for AMS classes
+\raggedright
+\setlength{\itemsep}{0pt}
+\setlength{\parsep}{0pt}
+\normalfont\ttfamily}%
+ \item[]}
+{\end{list}}
+
+\@ifundefined{date}{}{\date{}}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% User specified LaTeX commands.
+\pagestyle{headings}
+
+\makeatother
+
+\usepackage{babel}
+\begin{document}
+
+\title{\vspace{0.2\textheight}
+Hausarbeit \\
+\vspace{0.1\textheight}
+Überführung eines Programms zur FEM-Berechnung von 2-Dimensional in
+3-Dimensional\vspace{0.02\textheight}
+}
+
+\author{Pavel Malkov - 1396622}
+
+\maketitle
+\thispagestyle{empty} 
+
+\newpage
+
+\thispagestyle{empty} 
+
+\tableofcontents
+
+\newpage
+
+\section{Einleitung}
+
+Im Folgenden wird die Überführung des zur Verfügung gestellten Programms
+zur Bestimmung der Temperaturverteilung vom 2-Dimensionalen ins 3-Dimensionale
+beschrieben. Die theoretische Grundlage liefert das Script \emph{Anwendung
+der Finite\textendash Elemente\textendash Methode}. Es wird die Temperaturverteilung
+in einem Quader berechnet, die Vernetzung des Körpers wird nicht betrachtet,
+es werden fertige Datensätze benutzt. Es wurde Absichtlich ein sehr
+einfaches Problem gewählt, sodass das Ergebnis der Berechnung mit
+dem theoretischen Wert verglichen werden kann. Das Programms setzt
+sich aus folgenden Teilen zusammen:
+\begin{itemize}
+\item Hauptprogramm: \emph{FEM+Diri\_ok.F }(Speicherverwaltung, Aufruf von
+Unterprogrammen)
+\item Unterprogramm: \emph{fem\_input.F }(Einelsen des Netzes, lokales Gleichungssystem,
+Assemblierung)
+\item Unterprogramm: \emph{fem\_randbed.F }(Einsetzen der Randbedingung
+ins das Gleichungssystem aus \emph{fem\_input.F})
+\item Unterprogramme: \emph{gs\_solve.F}, \emph{jac\_solve.F }(iterative
+Löser für lineare Gleichungssysteme)
+\item Unterprogramm: \emph{dsecnd.F }(Hilfsunterprogramm für LAPACK)
+\item Unterprogramm: \emph{printr.f }(formatierte Ausgabe)
+\item Makefile: \emph{FEM+Diri\_ok+gf-LAPACK.mk}
+\end{itemize}
+Auszüge aus Quelltexten wurden zur besseren Lesbarkeit umformatiert.
+
+\section{Makefile}
+
+\subsection{Aufbau}
+
+Das Makefile dient dazu die Compiler-Anweisung zu erstellen. Dabei
+wird die Zeile, mit der dieser Aufgerufen wird aus folgenden Teilen
+zusammengesetzt:
+\begin{itemize}
+\item CF: Compiler-Typ
+\item fn: Name des Hauptprogramms
+\item FFLAGS: Compilerschalter und Prepozessoranweisungen
+\item SRC: Quelldateinamen
+\item OBJ: Objektdateinamen
+\end{itemize}
+Ein Beispiel für ein einfaches Makefile mit diesen Komplonenten wäre:
+\begin{lyxcode}
+CF=gfortran
+
+FFLAGSPP=-g~-Wall~-Dfortran90~-Dplevel1~-DGaussSeidel~-fdefault-real-8
+
+fn=FEM+Diri\_ok
+
+SRC=\$\{fn\}.F~fem\_input.F~fem\_randbed.F~gs\_solve.F~mg.f~printr.f~dsecnd.F
+
+OBJ=\$\{fn\}.o~fem\_input.o~fem\_randbed.o~gs\_solve.o~mg.o~printr.o~dsecnd.o
+
+\$\{fn\}.exe:	\$(OBJ)
+\begin{lyxcode}
+\$(CF)~\$\{FFLAGS\}~-o~\$\{fn\}.exe~\$(OBJ)
+\end{lyxcode}
+clean:~	
+\begin{lyxcode}
+rm~\$(OBJ)~\$\{fn\}.exe
+\end{lyxcode}
+.f.o~:~	
+\begin{lyxcode}
+\$(CF)~\$\{FFLAGS\}~-c~\$<
+\end{lyxcode}
+.F.o~:
+\begin{lyxcode}
+\$(CF)~\$\{FFLAGSPP\}~-c~\$<
+\end{lyxcode}
+\end{lyxcode}
+\newpage
+
+\section{Hauptprogramm}
+
+\subsection{Das Hauptprogramm}
+
+Das Hauptprogramm FEM+Diri\_ok.F dient zur Verwaltung globaler Variablen
+und Felder und zum aufrufen von Unterprogrammen, die die Teilaufgaben
+erledigen.
+
+\subsection{Dimensionierung und Allokierung}
+
+Zunächst muss für globalen Felder variable Speichermengen bereitgestellt
+werden, hierzu ist es notwendig, die Größe des zu berechnenden Problems
+festzustellen. Dies wurde durch die Function \emph{countEntries} implementiert:
+\begin{lyxcode}
+function~countEntries(strng)~result(n)
+
+implicit~none~~~~~~~~~
+
+character(len=128)~::~strng~~~~~~~~~
+
+integer(kind=4)~::~i,~ios,~n~~~~~~~~~
+
+real(kind=4)~::~dummy
+
+write(unit~=~6,~fmt~=~{*})~'countEntries:~',~strng~~~~~~~~~
+
+i~=~1~~~~~~~~~
+
+ios~=~0~~~~~~~~~
+
+open(unit~=~33,~iostat~=~ios,~file~=~strng,~status~=~'old')~~~~~~~~~~
+
+if~(ios~.ne.~0)~then~~~~~~~~~~~~~
+\begin{lyxcode}
+write(unit~=~6,~fmt=~{*})'countEntries:~Fehler~beim~Dateipfad'~~~~~~~~~
+\end{lyxcode}
+else~~~~~~~~~~~~~
+\begin{lyxcode}
+do~while~(ios~.eq.~0)~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+read(unit~=~33,~fmt~=~{*},~iostat~=~ios)~dummy~~~~~~~~~~~~~~~~~
+
+i~=~i~+~1~~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~
+
+n~=~i~-~2~~~~~~~~~~~~~
+
+write(unit~=~6,~fmt~=~{*})~'Anzahl~der~Einträge:~',~n~~~~~~~~~~~~~
+
+write(unit~=~6,~fmt~=~{*})~'-{}-{}-{}-{}-{}-{}-{}-'~~~~~~~~~
+\end{lyxcode}
+end~if~~~~~~~~~
+
+close(unit~=~33,~status~=~'keep')
+
+end~function~countEntries
+\end{lyxcode}
+Mit den Ergebnissen dieser Function lassen sich nun die Größen der
+Felder bestimmen und dadurch der Speicher allokieren:
+\begin{lyxcode}
+\begin{lyxcode}
+path~=~'mesh.nodes'~~~~~~~
+
+pdim~=~countEntries(path)~~~~~~~
+
+path~=~'mesh.elements'~~~~~~~
+
+edim~=~countEntries(path)~~~~~~~
+
+path~=~'mesh.boundary'~~~~~~~
+
+bdim~=~countEntries(path)
+
+~~
+
+allocate~(~p(pdim,~3)~)~~~~~~~
+
+allocate~(~A(pdim,~pdim)~)~~~~~~~
+
+allocate~(~ditlpu(pdim,~pdim)~)~~~~~~~
+
+allocate~(~b(pdim)~)~~~~~~~
+
+allocate~(~blokal(4)~)~~~~~~
+
+allocate~(~ditb(pdim)~)~~~~~~~
+
+allocate~(~filter(pdim)~)~
+
+\newpage
+
+\end{lyxcode}
+\#ifdef~LUZerlegung~~~~~~~
+\begin{lyxcode}
+allocate~(~ipiv(pdim)~)~
+\end{lyxcode}
+\#endif~~~~~~~
+\begin{lyxcode}
+allocate~(~u(pdim)~)~~~~~~~
+
+allocate~(~xneu(pdim)~)~~~~~~~
+
+allocate~(~e(edim,~4)~)~~~~~~
+
+allocate~(~be(bdim,~3)~)~~~~~~~
+
+allocate~(~stmp(4,~4)~)
+\end{lyxcode}
+
+\end{lyxcode}
+\newpage
+
+\section{Input}
+
+\subsection{Einlesen der Netzdaten}
+
+Das Unterprogramm \emph{fem\_input.F} enthält den größten Teil der
+Anpassungen zur Umwandlung von 2-D in 3-D. Dieses Unterprogramm liest
+ein und bereinigt die Netzdaten, erzeugt daraus die Lokalen Steifigkeitsmatrizen
+und Lastvektoren und assembliert diese zur globalen Steifigkeitsmatrix
+und Lastvektor. Es setzt das Grundgerüst des letztendlich zu lösenden
+Gleichungssystems zusammen. Die Netzdaten sind auf drei Dateien verteilt:
+\\
+\begin{itemize}
+\item \emph{mesh.nodes}, die die Koordinaten aller Knoten enthält
+\item \emph{mesh.elements}, in der Tetraederelemente als Auflistung ihrer
+Eckknoten zu finden sind und
+\item \emph{mesh.boundary}, in der die dreieckigen Randelemente als Auflistung
+ihrer Eckknoten sind\\
+\end{itemize}
+Es wurde beachtet, dass in der Datei \emph{mesh.boundary} aufgrund
+der Art der Erzeugung des Netzes auch Elemente im Inneren des untersuchten
+Körpers liegen, diese mussten vor dem setzen der Randbedingung herausgefiltert
+werden. Dazu wurde ein Feld namens \emph{filter} angelegt, in dem
+die Liste aller Knoten abgespeichert wird, wobei die tatsächlichen
+Randknoten ein negatives Vorzeichen bekommen. Dies wird auch später
+beim Einbau der Randbedingung von Nutzen sein, da diese Methode gleichzeitig
+gewährleistet, dass die Wiederholung von Knoten, die sich mehrere
+Elemente teilen, kein Rolle mehr spielt. Da der notwendige Speicher
+bereits im hauptprogramm allokiert wurde, können jetzt die Daten direkt
+aus den Dateien in die entsprechenden Felder geschrieben werden.
+\begin{lyxcode}
+!-{}-{}-{}-{}-{}-{}-WRITE~NODES-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-
+
+ios~=~0~~~~~~~~~
+
+open(unit~=~33,~iostat~=~ios,~file~=~'mesh.nodes')~~~~~~~~~
+
+open(unit~=~34,~file~=~'nodes.dem')~~~~~~~~~
+
+do~ir~=~1,~pdim~~~~~~~~~~~~~~
+\begin{lyxcode}
+filter(ir)~=~ir~~~~~~~~~~~~
+
+read(unit~=~33,~fmt~=~{*},~iostat~=~ios)~dummyInt,~dummyReal,~~~~~~
+
+\&~~~p(ir,~1),~p(ir,~2),~p(ir,~3)~~~~~~~~~~~~~~
+
+write(unit~=~34,~fmt~=~{*})~p(ir,~1),~p(ir,~2),~~~~~~~
+
+\&~~~~~~~p(ir,~3)~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~
+
+close(unit~=~33,~status~=~'keep')~~~~~~~~~
+
+close(unit~=~34,~status~=~'keep')
+
+!-{}-{}-{}-{}-{}-WRITE~ELEMENT~NODES-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-
+
+open(unit~=~33,~iostat~=~ios,~file~=~'mesh.elements',~~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~~status~=~'old')~~~~~~~~
+
+open(unit~=~34,~file~=~'elements')~~~~~~~~~
+
+if~(ios~.ne.~0)~then~~~~~~~~~~~~~
+\begin{lyxcode}
+write(unit~=~6,~fmt~=~{*})~'Fehler~beim~Dateipfad'~~~~~~~~~
+\end{lyxcode}
+else~~~~~~~~~~~~~
+\begin{lyxcode}
+do~ir~=~1,~edim~~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+read(unit~=~33,~fmt~=~{*},~iostat~=~ios)~dummyInt,~~~~~~~
+
+\&~~~dummyInt,~dummyInt,~~~~~~~
+
+\&~~~e(ir,~1),~e(ir,~2),~e(ir,~3),~e(ir,~4)~~~~~~~~~~~~~~~~~~
+
+write(unit~=~34,~fmt~=~{*})~e(ir,~1),~~e(ir,~2),~~~~~~~
+
+\&~~~~~~~~~~~e(ir,~3),~e(ir,~4)~~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~
+\end{lyxcode}
+end~if~~~~~~~~~
+
+close(unit~=~33,~status~=~'keep')~~~~~~~~~
+
+close(unit~=~34,~status~=~'keep')
+
+\newpage
+
+open(unit~=~34,~file~=~'elements.dem')~~~~~~~~~
+
+do~ir~=~1,~edim~~~~~~~~~~~~~
+\begin{lyxcode}
+do~jr~=~1,~4~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+node~=~e(ir,~jr)~~~~~~~~~~~~~~~~~~
+
+write(unit~=~34,~fmt~=~{*})~p(node,~1),~~~~~~~
+
+\&~~~~~~~~~~p(node,~2),~p(node,~3)~~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~
+
+close(unit~=~34,~status~=~'keep')
+\end{lyxcode}
+Um das Einlesen unterschiedlicher Quaderförmiger Netze zu ermöglichen,
+wurde die Bestimmung des Randes zur Bereinigung der Daten variabel
+gestaltet.
+\begin{lyxcode}
+!-{}-{}-{}-{}-{}-WRITE~BOUNDARY~NODES-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-
+
+xmax~=~-10000.0d+00~~~~~~~~~
+
+xmin~=~~10000.0d+00~~~~~~~~~
+
+ymax~=~-10000.0d+00~~~~~~~~~
+
+ymin~=~~10000.0d+00~~~~~~~~~
+
+zmax~=~-10000.0d+00~~~~~~~~~
+
+zmin~=~~10000.0d+00~~~~~~~~~
+
+open(unit~=~33,~file~=~'minmax')~~~~~~~~~
+
+do~i~=~1,~pdim~~~~~~~~~~~~
+\begin{lyxcode}
+xmax~=~dmax1(xmax,~p(i,~1))~~~~~~~~~~~~
+
+xmin~=~dmin1(xmin,~p(i,~1))~~~~~~~~~~~~
+
+ymax~=~dmax1(ymax,~p(i,~2))~~~~~~~~~~~~
+
+ymin~=~dmin1(ymin,~p(i,~2))~~~~~~~~~~~~
+
+zmax~=~dmax1(zmax,~p(i,~3))~~~~~~~~~~~~
+
+zmin~=~dmin1(zmin,~p(i,~3))~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~
+
+write(unit~=33,~fmt=~{*})~'max~xyz:~',~xmax,~ymax,~zmax~~~~~~~~~
+
+write(unit~=33,~fmt=~{*})~'min~xyz:~',~xmin,~ymin,~zmin~~~~~~~~~
+
+close(unit~=33,~status~=~'keep')
+
+open(unit~=~35,~iostat~=~ios,~file~=~'mesh.boundary',~~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~status~=~'old')~~~~~~~~~~
+
+open(unit~=~36,~file~=~'boundary')~~~~~~~~~
+
+if~(ios~.ne.~0)~then~~~~~~~~~~~~~
+\begin{lyxcode}
+write(unit~=~6,~fmt~=~{*})~'Fehler~beim~Dateipfad'~~~~~~~~~
+\end{lyxcode}
+else~~~~~~~~~~~~~
+\begin{lyxcode}
+do~ir~=~1,bdim~~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+read(unit~=~35,~fmt~=~{*},~iostat~=~ios)~dummyInt,~~~~~~
+
+\&~~~dummyInt,~dummyInt,~dummyInt,~dummyInt,~~~~~~
+
+\&~~~~~~~~~~~~~~be(ir,~1),~be(ir,~2),~be(ir,~3)~~~~~~~~~~~~~~~~~
+
+write(unit~=~36,~fmt~=~{*})~be(ir,~1),~~be(ir,~2),~~~~~~
+
+\&~~~~~~~~~~~be(ir,~3)~~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~
+\end{lyxcode}
+end~if~~~~~~~~~
+
+close(unit~=~35,~status~=~'keep')~~~~~~~~~
+
+close(unit~=~36,~status~=~'keep')
+
+\newpage
+
+open(unit~=~37,~file~=~'filter')~~~~~~~~~
+
+open(unit~=~38,~file~=~'boundary.dem')~~~~~~~~~
+
+do~ir~=~1,~bdim~~~~~~~~~~~
+\begin{lyxcode}
+do~jr~=~1,~3~~~~~~~~~~~~~
+\begin{lyxcode}
+node~=~be(ir,~jr)~~~~~~~~~~~~~~~~
+
+if~(~~~~~~
+
+\&~~~~~~~~~~~~((p(node,~1)~.gt.~xmin)~.and.~(p(node,~1)~.lt.~xmax))~~~~~~
+
+\&~~~~~~.and.~((p(node,~2)~.gt.~ymin)~.and.~(p(node,~2)~.lt.~ymax))~~~~~~
+
+\&~~~~~~.and.~((p(node,~3)~.gt.~zmin)~.and.~(p(node,~3)~.lt.~zmax))~~~~~~
+
+\&~~~~~~~~~~~)~~~~~~
+
+\&~~then~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+cycle~~~~~~~~~~~~~~~
+\end{lyxcode}
+else~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+if~(filter(node)~.lt.~0)~then~~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+cycle~~~~~~~~~~~~~~~~
+\end{lyxcode}
+else~~~~~~~~~~~~~~~~~~
+
+filter(node)~=~-filter(node)~~~~~~~~~~~~~~~~
+
+end~if~~~~~~~~~~~~~~~
+\end{lyxcode}
+end~if~~~~~~~~~~~~~~~~~
+
+write(unit~=~38,~fmt~=~{*})~p(node,~1),~~~~~~~
+
+\&~~~~~~~~~~~p(node,~2),~p(node,~3)~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~
+\end{lyxcode}
+end~do
+
+~~~~~~~~close(unit~=~37,~status~=~'keep')~~~~~~~~~
+
+close(unit~=~38,~status~=~'keep')
+
+open(unit~=~33,~file~=~'filter')~~~~~~~~~
+
+do~i~=~1,~pdim~~~~~~~~~~~~
+\begin{lyxcode}
+write(unit~=~33,~fmt~=~{*})~filter(i)~~~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~
+
+close(unit~=~33,~status~=~'keep')
+\end{lyxcode}
+\newpage
+
+\subsection{Erzeugung der Lokalen Steifigkeitsmatrix}
+
+Nachdem das Netz erfolgreich eingelesen wurde muss noch aus den Knotenkoordinaten
+für jedes Element eine Lokale Steifigkeitsmatrix erzeugt werden. (Die
+eingerahmten stellen entsprechen Zuweisungen im Quelltext von \emph{fem\_input.F})
+
+\selectlanguage{english}%
+\[
+u\left(x,y,z\right)=\sum_{i}c_{i}\phi_{i}=c_{1}+c_{2}x+c_{3}y+c_{4}z=\left(c_{1},\,c_{2},\,c_{3},\,c_{4}\right)\cdot\begin{pmatrix}1\\
+x\\
+y\\
+z
+\end{pmatrix}=\underline{c}\cdot\vec{r}
+\]
+
+\[
+\begin{pmatrix}x\\
+y\\
+z
+\end{pmatrix}=\begin{pmatrix}x_{1}\\
+y_{1}\\
+z_{1}
+\end{pmatrix}+\begin{pmatrix}x_{2}-x_{1} & x_{3}-x_{1} & x_{4}-x_{1}\\
+y_{2}-y_{1} & y_{3}-y_{1} & y_{4}-y_{1}\\
+z_{2}-z_{1} & z_{3}-z_{1} & z_{4}-z_{1}
+\end{pmatrix}\cdot\begin{pmatrix}\xi\\
+\eta\\
+\zeta
+\end{pmatrix}=\begin{pmatrix}x_{1}\\
+y_{1}\\
+z_{1}
+\end{pmatrix}+\begin{pmatrix}\left(x_{2}-x_{1}\right)\xi & \left(x_{3}-x_{1}\right)\eta & \left(x_{4}-x_{1}\right)\zeta\\
+\left(y_{2}-y_{1}\right)\xi & \left(y_{3}-y_{1}\right)\eta & \left(y_{4}-y_{1}\right)\zeta\\
+\left(z_{2}-z_{1}\right)\xi & \left(z_{3}-z_{1}\right)\eta & \left(z_{4}-z_{1}\right)\zeta
+\end{pmatrix}\cdot\begin{pmatrix}\xi\\
+\eta\\
+\zeta
+\end{pmatrix}
+\]
+\\
+
+mit\\
+\[
+\xi=\begin{pmatrix}1\\
+0\\
+0
+\end{pmatrix}\quad,\quad\eta=\begin{pmatrix}0\\
+1\\
+0
+\end{pmatrix}\quad,\quad\zeta=\begin{pmatrix}0\\
+0\\
+1
+\end{pmatrix}\quad,\quad\vec{w}=\begin{pmatrix}\xi\\
+\eta\\
+\zeta
+\end{pmatrix}
+\]
+\\
+\[
+\vec{r}=\vec{r_{1}}+\underline{\underline{K}}\cdot\vec{w}\Rightarrow\vec{w}=\underline{\underline{K}}^{-1}\cdot\left(\vec{r}-\vec{r_{1}}\right)\quad,\quad\underline{\underline{J}}=\underline{\underline{K}}^{^{T}}
+\]
+\\
+\noindent\fbox{\begin{minipage}[t]{1\columnwidth - 2\fboxsep - 2\fboxrule}%
+\[
+\underline{\underline{J}}=\begin{pmatrix}\frac{\partial x}{\partial\xi} & \frac{\partial y}{\partial\xi} & \frac{\partial z}{\partial\xi}\\
+\frac{\partial x}{\partial\eta} & \frac{\partial y}{\partial\eta} & \frac{\partial z}{\partial\eta}\\
+\frac{\partial x}{\partial\zeta} & \frac{\partial y}{\partial\zeta} & \frac{\partial z}{\partial\zeta}
+\end{pmatrix}=\begin{pmatrix}a & b & c\\
+d & e & f\\
+g & h & i
+\end{pmatrix}\quad,\quad det\,\underline{\underline{J}}=aei+bfg+cdh-gec-hfa-idb
+\]
+\\
+\begin{align*}
+\vec{w} & =\frac{\underline{\underline{J}}}{det\,\underline{\underline{J}}}\cdot Adj\,\underline{\underline{J}}\cdot\left(\vec{r}-\vec{r_{1}}\right)=\frac{1}{det\,\underline{\underline{J}}}\cdot\left(\vec{r}-\vec{r_{1}}\right)\cdot\begin{pmatrix}ei-fh & fg-di & dh-eg\\
+ch-bi & ai-cg & bg-dh\\
+bf-ce & cd-af & ae-bd
+\end{pmatrix}\\
+\\
+ & =\begin{pmatrix}\varphi_{11} & \varphi_{12} & \varphi_{13}\\
+\varphi_{21} & \varphi_{22} & \varphi_{23}\\
+\varphi_{31} & \varphi_{32} & \varphi_{33}
+\end{pmatrix}\quad,\quad\underline{\underline{\tilde{J}}}\left(\underline{\underline{K}}^{-1}\right)=\begin{pmatrix}\frac{\partial\xi}{\partial x} & \frac{\partial\eta}{\partial x} & \frac{\partial\zeta}{\partial x}\\
+\frac{\partial\xi}{\partial y} & \frac{\partial\eta}{\partial y} & \frac{\partial\zeta}{\partial x}\\
+\frac{\partial\xi}{\partial z} & \frac{\partial\eta}{\partial z} & \frac{\partial\zeta}{\partial x}
+\end{pmatrix}
+\end{align*}
+%
+\end{minipage}}
+\[
+u_{\xi}=\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\xi}=\alpha_{2}\quad,\quad u_{\eta}=\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\eta}=\alpha_{3}\quad,\quad u_{\zeta}=\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\zeta}=\alpha_{4}
+\]
+\\
+\[
+\frac{\partial}{\partial x}u\left(x,y,z\right)=\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\xi}\cdot\frac{\partial\xi\left(x,y,z\right)}{\partial x}\right)+\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\eta}\cdot\frac{\partial\eta\left(x,y,z\right)}{\partial x}\right)+\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\zeta}\cdot\frac{\partial\zeta\left(x,y,z\right)}{\partial x}\right)
+\]
+\\
+\[
+\frac{\partial}{\partial y}u\left(x,y,z\right)=\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\xi}\cdot\frac{\partial\xi\left(x,y,z\right)}{\partial y}\right)+\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\eta}\cdot\frac{\partial\eta\left(x,y,z\right)}{\partial y}\right)+\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\zeta}\cdot\frac{\partial\zeta\left(x,y,z\right)}{\partial y}\right)
+\]
+\\
+\[
+\frac{\partial}{\partial z}u\left(x,y,z\right)=\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\xi}\cdot\frac{\partial\xi\left(x,y,z\right)}{\partial z}\right)+\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\eta}\cdot\frac{\partial\eta\left(x,y,z\right)}{\partial z}\right)+\left(\frac{\partial u\left(\xi,\eta,\zeta\right)}{\partial\zeta}\cdot\frac{\partial\zeta\left(x,y,z\right)}{\partial z}\right)
+\]
+\\
+\[
+\frac{\partial}{\partial x}=\frac{\varphi_{11}}{det\,\underline{\underline{J}}}\alpha_{2}+\frac{\varphi_{21}}{det\,\underline{\underline{J}}}\alpha_{3}+\frac{\varphi_{31}}{det\,\underline{\underline{J}}}\alpha_{4}
+\]
+\\
+\[
+\frac{\partial}{\partial y}=\frac{\varphi_{12}}{det\,\underline{\underline{J}}}\alpha_{2}+\frac{\varphi_{22}}{det\,\underline{\underline{J}}}\alpha_{3}+\frac{\varphi_{32}}{det\,\underline{\underline{J}}}\alpha_{4}
+\]
+\\
+\[
+\frac{\partial}{\partial z}=\frac{\varphi_{13}}{det\,\underline{\underline{J}}}\alpha_{2}+\frac{\varphi_{23}}{det\,\underline{\underline{J}}}\alpha_{3}+\frac{\varphi_{33}}{det\,\underline{\underline{J}}}\alpha_{4}
+\]
+\\
+\[
+\intop_{A}D\left\{ \left(\frac{\partial u\left(\vec{r}\right)}{\partial x}\right)^{2}+\left(\frac{\partial u\left(\vec{r}\right)}{\partial y}\right)^{2}+\left(\frac{\partial u\left(\vec{r}\right)}{\partial z}\right)^{2}\right\} -q\left(\vec{r}\right)\cdot u\left(\vec{r}\right)\,d\left(\vec{r}\right)=0
+\]
+\\
+
+\noindent da die Knotenkoordinaten konstant sind, ergibt sich:
+
+\selectlanguage{ngerman}%
+\noindent 
+\begin{align*}
+D\cdot I & =D\cdot\int\left[u_{x}^{2}+u_{y}^{2}+u_{z}^{2}\right]\:d^{3}V\\
+ & =D\cdot\underset{V}{\frac{1}{det\,\underline{\underline{J}}}\int}\left[\left(u_{\xi}\xi_{x}+u_{\eta}\eta_{x}+u_{\zeta}\zeta_{x}\right)^{2}+\left(u_{\xi}\xi_{y}+u_{\eta}\eta_{y}+u_{\zeta}\zeta_{y}\right)^{2}+\left(u_{\xi}\xi_{z}+u_{\eta}\eta_{z}+u_{\zeta}\zeta_{z}\right)^{2}\right]\\
+ & =D\cdot\frac{1}{det\underline{\underline{\,J}}}\left\{ \alpha_{2}^{2}a+\alpha_{3}^{2}b+\alpha_{4}^{2}c+2\alpha_{2}\alpha_{3}d+2\alpha_{2}\alpha_{4}e+2\alpha_{3}\alpha_{4}f\right\} \intop_{0}^{\xi=1}\;\intop_{0}^{\zeta=1-\xi}\;\intop_{0}^{\eta=1-\xi-\zeta}1\quad d\eta d\zeta d\xi
+\end{align*}
+
+\selectlanguage{english}%
+mit\\
+\noindent \begin{flushleft}
+\noindent\fbox{\begin{minipage}[t]{1\columnwidth - 2\fboxsep - 2\fboxrule}%
+\noindent \begin{flushleft}
+$a=\varphi_{11}^{2}+\varphi_{12}^{2}+\varphi_{13}^{2}$ 
+\par\end{flushleft}
+\noindent \begin{flushleft}
+$b=\varphi_{21}^{2}+\varphi_{22}^{2}+\varphi_{32}^{2}$
+\par\end{flushleft}
+\noindent \begin{flushleft}
+$c=\varphi_{31}^{2}+\varphi_{32}^{2}+\varphi_{33}^{2}$
+\par\end{flushleft}
+\noindent \begin{flushleft}
+$d=\varphi_{11}\varphi_{21}+\varphi_{12}\varphi_{22}+\varphi_{13}\varphi_{23}$
+\par\end{flushleft}
+\noindent \begin{flushleft}
+$e=\varphi_{11}\varphi_{31}+\varphi_{12}\varphi_{32}+\varphi_{13}\varphi_{33}$
+\par\end{flushleft}
+\noindent \begin{flushleft}
+$f=\varphi_{21}\varphi_{31}+\varphi_{22}\varphi_{32}+\varphi_{23}\varphi_{33}$
+\par\end{flushleft}%
+\end{minipage}}\\
+\par\end{flushleft}
+
+\begin{doublespace}
+Nun kann man das Integral über den Einheitstetraeder analytisch bestimmen
+und damit vermeiden es für jedes Element gesondert tun zu müssen\\
+
+\end{doublespace}
+
+\begin{align*}
+\intop_{0}^{\xi=1}\;\intop_{0}^{\zeta=1-\xi}\;\intop_{0}^{\eta=1-\xi-\zeta}1\quad d\eta d\zeta d\xi & =\intop_{0}^{1}\;\intop_{0}^{1-\xi}1-\xi-\zeta\quad d\zeta d\xi\\
+ & =\intop_{0}^{1}\zeta-\xi\zeta-\frac{1}{2}\zeta^{2}\biggl|_{0}^{1-\xi}\quad d\xi\\
+ & =\intop_{0}^{1}\frac{1}{2}-\xi-\frac{1}{2}\xi^{2}+\frac{1}{6}\xi\quad d\xi\\
+ & =\frac{1}{6}
+\end{align*}
+\\
+\[
+I_{1}=\frac{1}{det\underline{\underline{\,J}}}\cdot\alpha_{2}^{2}\frac{a}{6}=\frac{1}{det\underline{\underline{\,J}}}\cdot\frac{a}{6}\cdot\begin{pmatrix}\alpha_{1} & \alpha_{2} & \alpha_{3} & \alpha_{4}\end{pmatrix}\cdot\underline{\underline{S}}_{1}^{'}\cdot\begin{pmatrix}\alpha_{1}\\
+\alpha_{2}\\
+\alpha_{3}\\
+\alpha_{4}
+\end{pmatrix}
+\]
+\\
+mit\\
+\[
+\underline{\underline{S}}_{1}^{'}=\frac{a}{6}\begin{pmatrix}0 & 0 & 0 & 0\\
+0 & 1 & 0 & 0\\
+0 & 0 & 0 & 0\\
+0 & 0 & 0 & 0
+\end{pmatrix}
+\]
+\\
+
+\begin{singlespace}
+\noindent analog dazu: \\
+\\
+\begin{align*}
+\underline{\underline{S}}_{2}^{'} & =\frac{b}{6}\begin{pmatrix}0 & 0 & 0 & 0\\
+0 & 0 & 0 & 0\\
+0 & 0 & 1 & 0\\
+0 & 0 & 0 & 0
+\end{pmatrix}\quad,\quad\underline{\underline{S}}_{3}^{'}=\frac{c}{6}\begin{pmatrix}0 & 0 & 0 & 0\\
+0 & 0 & 0 & 0\\
+0 & 0 & 0 & 0\\
+0 & 0 & 0 & 1
+\end{pmatrix}\quad,\quad\underline{\underline{S}}_{4}^{'}=\frac{d}{6}\begin{pmatrix}0 & 0 & 0 & 0\\
+0 & 0 & 1 & 0\\
+0 & 1 & 0 & 0\\
+0 & 0 & 0 & 0
+\end{pmatrix}
+\end{align*}
+\\
+\[
+\underline{\underline{S}}_{5}^{'}=\frac{e}{6}\begin{pmatrix}0 & 0 & 0 & 0\\
+0 & 0 & 0 & 1\\
+0 & 0 & 0 & 0\\
+0 & 1 & 0 & 0
+\end{pmatrix}\quad,\quad\underline{\underline{S}}_{6}^{'}=\frac{f}{6}\begin{pmatrix}0 & 0 & 0 & 0\\
+0 & 0 & 0 & 0\\
+0 & 0 & 0 & 1\\
+0 & 0 & 1 & 0
+\end{pmatrix}
+\]
+\\
+\[
+\begin{array}{ccccc}
+u_{1}\left(0,0,0\right)= & +\alpha_{1}\\
+u_{2}\left(1,0,0\right)= & +\alpha_{1} & +\alpha_{2}\\
+u_{3}\left(0,1,0\right)= & +\alpha_{1} &  & +\alpha_{3}\\
+u_{4}\left(0,0,1\right)= & +\alpha_{1} &  &  & +\alpha_{4}
+\end{array}
+\]
+\\
+mit\\
+\\
+$u_{1}=\alpha_{1}$\\
+$u_{2}=u_{1}+\alpha_{2}$\\
+$u_{3}=u_{1}+\alpha_{3}$\\
+$u_{4}=u_{1}+\alpha_{4}$\\
+\begin{align*}
+ & \Rightarrow\begin{cases}
+\begin{array}{c}
+\alpha_{1}=u_{1}\\
+\alpha_{2}=u_{2}-u_{1}\\
+\alpha_{3}=u_{3}-u_{1}\\
+\alpha_{4}=u_{4}-u_{1}
+\end{array}\end{cases}
+\end{align*}
+\\
+In Matrixschreibweise:\\
+\\
+\[
+\vec{u}=\underline{\underline{A}}^{-1}\vec{\alpha}=\begin{pmatrix}u_{1}\\
+u_{2}\\
+u_{3}\\
+u_{4}
+\end{pmatrix}=\begin{pmatrix}1 & 0 & 0 & 0\\
+1 & 1 & 0 & 0\\
+1 & 0 & 1 & 0\\
+1 & 0 & 0 & 1
+\end{pmatrix}\cdot\begin{pmatrix}\alpha_{1}\\
+\alpha_{2}\\
+\alpha_{3}\\
+\alpha_{4}
+\end{pmatrix}
+\]
+\\
+\[
+\Rightarrow\begin{pmatrix}\alpha_{1}\\
+\alpha_{2}\\
+\alpha_{3}\\
+\alpha_{4}
+\end{pmatrix}=\begin{pmatrix}1 & 0 & 0 & 0\\
+-1 & 1 & 0 & 0\\
+-1 & 0 & 1 & 0\\
+-1 & 0 & 0 & 1
+\end{pmatrix}\cdot\begin{pmatrix}u_{1}\\
+u_{2}\\
+u_{3}\\
+u_{4}
+\end{pmatrix}=\vec{\alpha}=\underline{\underline{A}}\vec{u}
+\]
+\\
+\begin{align*}
+I & =\vec{\alpha}^{T}\cdot\left(a\underline{\underline{S}}_{1}^{'}+b\underline{\underline{S}}_{2}^{'}+c\underline{\underline{S}}_{3}^{'}+d\underline{\underline{S}}_{4}^{'}+e\underline{\underline{S}}_{5}^{'}+f\underline{\underline{S}}_{6}^{'}\right)\vec{\cdot\alpha}\\
+ & =\vec{u}^{T}\underline{\underline{A}}^{T}\cdot\left(a\underline{\underline{S}}_{1}^{'}+b\underline{\underline{S}}_{2}^{'}+c\underline{\underline{S}}_{3}^{'}+d\underline{\underline{S}}_{4}^{'}+e\underline{\underline{S}}_{5}^{'}+f\underline{\underline{S}}_{6}^{'}\right)\cdot\vec{u}\underline{\underline{A}}
+\end{align*}
+\\
+\begin{align*}
+\underline{\underline{S}} & =\underline{\underline{A}}^{T}\cdot\left(a\underline{\underline{S}}_{1}^{'}+b\underline{\underline{S}}_{2}^{'}+c\underline{\underline{S}}_{3}^{'}+d\underline{\underline{S}}_{4}^{'}+e\underline{\underline{S}}_{5}^{'}+f\underline{\underline{S}}_{6}^{'}\right)\cdot\underline{\underline{A}}
+\end{align*}
+\\
+damit ergeben sich die Teilsteifigkeitsmatrizen zu:\\
+\\
+\[
+a\underline{\underline{S}}_{1}=\frac{a}{6}\begin{pmatrix}1 & -1 & 0 & 0\\
+-1 & 1 & 0 & 0\\
+0 & 0 & 0 & 0\\
+0 & 0 & 0 & 0
+\end{pmatrix}\quad,\quad b\underline{\underline{S}}_{2}=\frac{b}{6}\begin{pmatrix}1 & 0 & -1 & 0\\
+0 & 0 & 0 & 0\\
+-1 & 0 & 1 & 0\\
+0 & 0 & 0 & 0
+\end{pmatrix}\quad,\quad c\underline{\underline{S}}_{3}=\frac{c}{6}\begin{pmatrix}1 & 0 & 0 & -1\\
+0 & 0 & 0 & 0\\
+0 & 0 & 0 & 0\\
+-1 & 0 & 0 & 1
+\end{pmatrix}
+\]
+\\
+\[
+d\underline{\underline{S}}_{4}=\frac{d}{6}\begin{pmatrix}2 & -1 & -1 & 0\\
+-1 & 0 & 1 & 0\\
+-1 & 1 & 0 & 0\\
+0 & 0 & 0 & 0
+\end{pmatrix}\quad,\quad e\underline{\underline{S}}_{5}=\frac{e}{6}\begin{pmatrix}2 & -1 & 0 & -1\\
+-1 & 0 & 0 & 1\\
+0 & 0 & 0 & 0\\
+-1 & 1 & 0 & 0
+\end{pmatrix}\quad,\quad f\underline{\underline{S}}_{6}=\frac{f}{6}\begin{pmatrix}2 & 0 & -1 & -1\\
+0 & 0 & 0 & 0\\
+-1 & 0 & 0 & 1\\
+-1 & 0 & 1 & 0
+\end{pmatrix}
+\]
+\\
+und damit die lokale Steifigkeitsmatrix:\\
+\\
+\noindent\fbox{\begin{minipage}[t]{1\columnwidth - 2\fboxsep - 2\fboxrule}%
+\begin{singlespace}
+\noindent 
+\[
+\underline{\underline{S}}_{e}=\frac{1}{det\underline{\underline{\,J}}}\cdot\frac{1}{6}\cdot\begin{pmatrix}a+b+c+2d+2e+2f & -a-d-e & -b-d-f & -c-e-f\\
+-a-d-e & a & d & e\\
+-b-d-f & d & b & f\\
+-c-e-f & e & f & c
+\end{pmatrix}
+\]
+\end{singlespace}
+%
+\end{minipage}}
+\end{singlespace}
+
+\selectlanguage{ngerman}%
+\newpage
+
+Die eingerahmten Bereiche können nun im Quelltext von \emph{fem\_input.F
+}eingefügt werden:
+\begin{lyxcode}
+do~ei~=~1,~edim
+\begin{lyxcode}
+x1~=~p(e(ei,~1),~1)~~~~~~~
+
+y1~=~p(e(ei,~1),~2)~~~~~~~
+
+z1~=~p(e(ei,~1),~3)
+
+x2~=~p(e(ei,~2),~1)~~~~~~~
+
+y2~=~p(e(ei,~2),~2)~~~~~~~
+
+z2~=~p(e(ei,~2),~3)
+
+x3~=~p(e(ei,~3),~1)~~~~~~~
+
+y3~=~p(e(ei,~3),~2)~~~~~~~
+
+z3~=~p(e(ei,~3),~3)
+
+x4~=~p(e(ei,~4),~1)~~~~~~~
+
+y4~=~p(e(ei,~4),~2)~~~~~~~
+
+z4~=~p(e(ei,~4),~3)
+
+~~~~~~
+
+a1~=~x2~-~x1~~~~~~~
+
+b1~=~y2~-~y1~~~~~~~
+
+c1~=~z2~-~z1~~~~~~~
+
+d1~=~x3~-~x1~~~~~~~
+
+e1~=~y3~-~y1~~~~~~~
+
+f1~=~z3~-~z1~~~~~~~
+
+g1~=~x4~-~x1~~~~~~~
+
+h1~=~y4~-~y1~~~~~~~
+
+i1~=~z4~-~z1
+
+~
+
+det\_J~=~a1{*}e1{*}i1~+~b1{*}f1{*}g1~+~c1{*}d1{*}h1~-~~g1{*}e1{*}c1~-~h1{*}f1{*}a1~~~~~~
+
+\&~~~~~-~i1{*}d1{*}b1
+
+~
+
+phi11~=~e1{*}i1~-~f1{*}h1~~~~~~~
+
+phi12~=~f1{*}g1~-~d1{*}i1~~~~~~~
+
+phi13~=~d1{*}h1~-~e1{*}g1~~~~~~~
+
+phi21~=~c1{*}h1~-~b1{*}i1~~~~~~~
+
+phi22~=~a1{*}i1~-~c1{*}g1~~~~~~~
+
+phi23~=~b1{*}g1~-~a1{*}h1~~~~~~~
+
+phi31~=~b1{*}f1~-~c1{*}e1~~~~~~~
+
+phi32~=~c1{*}d1~-~a1{*}f1~~~~~~~
+
+phi33~=~a1{*}e1~-~b1{*}d1
+
+a2~=~phi11{*}{*}2~+~phi12{*}{*}2~+~phi13{*}{*}2~~~~~~~
+
+b2~=~phi21{*}{*}2~+~phi22{*}{*}2~+~phi23{*}{*}2~~~~~~~
+
+c2~=~phi31{*}{*}2~+~phi32{*}{*}2~+~phi33{*}{*}2~~~~~~~
+
+d2~=~phi11{*}phi21~+~phi12{*}phi22~+~phi13{*}phi23~~~~~~~
+
+e2~=~phi11{*}phi31~+~phi12{*}phi32~+~phi13{*}phi33~~~~~~~
+
+f2~=~phi21{*}phi31~+~phi22{*}phi32~+~phi23{*}phi33
+
+\newpage~
+
+stmp(1,1)~=~a2~+~b2~+c2~+2{*}d2~+~2{*}e2~+~2{*}f2~~~~~~~
+
+stmp(1,2)~=~-a2~-~d2~-~e2~~~~~~~
+
+stmp(1,3)~=~-b2~-~a2~-~f2~~~~~~~
+
+stmp(1,4)~=~-c2~-~e2~-~f2~~~~~~~
+
+stmp(2,1)~=~-a2~-~d2~-~e2~~~~~~~
+
+stmp(2,2)~=~a2~~~~~~~
+
+stmp(2,3)~=~d2~~~~~~~
+
+stmp(2,4)~=~e2~~~~~~
+
+stmp(3,1)~=~-b2~-~d2~-~f2~~~~~~~
+
+stmp(2,2)~=~d2~~~~~~~
+
+stmp(2,3)~=~b2~~~~~~~
+
+stmp(2,4)~=~f2~~~~~~~
+
+stmp(1,4)~=~-c2~-~e2~-~f2~~~~~~~
+
+stmp(2,2)~=~e2~~~~~~~
+
+stmp(2,3)~=~f2~~~~~~~
+
+stmp(2,4)~=~c2
+
+{[}...{]}
+\end{lyxcode}
+end~do
+\end{lyxcode}
+
+\subsection{Erzeugung des Lastvektors}
+
+Die rechte Seite ergibt sich aus der Wärmeleitungsgleichung.
+
+allgemein:
+
+\[
+\underset{V}{\int}\frac{D}{2}\left[\left(\frac{\partial u(\vec{r})}{\partial x}\right)^{2}+\left(\frac{\partial u(\vec{r})}{\partial y}\right)^{2}+\left(\frac{\partial u(\vec{r})}{\partial z}\right)^{2}\right]-q(\vec{r})\cdot u(\vec{r})\:d^{3}\vec{r}=\int\frac{D}{2}\left[u_{x}^{2}+u_{y}^{2}+u_{z}^{2}\right]-q
+\]
+
+im lokalen Koordinatensystem:
+\begin{align*}
+\underset{V}{\int}q\cdot\vec{u}\:d^{3}\vec{r} & =\underset{V}{\int}q\left(\alpha_{1}+\alpha_{2}\xi+\alpha_{3}\eta+\alpha_{4}\zeta\right)\cdot det\underline{\underline{\,J}}\quad d\eta\,d\zeta\,d\xi
+\end{align*}
+
+mit $q=4$
+
+\begin{align*}
+q\cdot\begin{pmatrix}\alpha_{1} & \alpha_{2} & \alpha_{3} & \alpha_{4}\end{pmatrix}\cdot\:det\underline{\underline{\,J}}\cdot\begin{pmatrix}\left(\intop_{0}^{\xi=1}\;\intop_{0}^{\zeta=1-\xi}\;\intop_{0}^{\eta=1-\xi-\zeta}1\quad d\eta\,d\zeta\,d\xi\right)\\
+\left(\intop_{0}^{\xi=1}\;\intop_{0}^{\zeta=1-\xi}\;\intop_{0}^{\eta=1-\xi-\zeta}\xi\quad d\eta\,d\zeta\,d\xi\right)\\
+\left(\intop_{0}^{\xi=1}\;\intop_{0}^{\zeta=1-\xi}\;\intop_{0}^{\eta=1-\xi-\zeta}\eta\quad d\eta\,d\zeta\,d\xi\right)\\
+\left(\intop_{0}^{\xi=1}\;\intop_{0}^{\zeta=1-\xi}\;\intop_{0}^{\eta=1-\xi-\zeta}\zeta\quad d\eta\,d\zeta\,d\xi\right)
+\end{pmatrix} & =\frac{det\underline{\underline{\,J}}}{6}\cdot\vec{\alpha}\cdot\begin{pmatrix}4\\
+1\\
+1\\
+1
+\end{pmatrix}\\
+ & =\frac{det\underline{\underline{\,J}}}{6}\cdot\vec{\alpha}^{T}\cdot\vec{b}^{\prime}\\
+ & =\frac{det\underline{\underline{\,J}}}{6}\cdot\vec{u}^{T}A^{T}\vec{b}^{\prime}\\
+ & =\frac{det\underline{\underline{\,J}}}{6}\cdot\vec{u}^{T}\cdot\begin{pmatrix}1\\
+1\\
+1\\
+1
+\end{pmatrix}
+\end{align*}
+
+Damit ergeben sich für die linke Seite der Vorfaktor $\frac{1}{6}\cdot\frac{1}{det\underline{\underline{\,J}}}$
+und für die rechte Seite $\frac{1}{6}\cdot det\underline{\underline{\,J}}$
+
+\subsection{Assemblierung}
+
+Nun werden für jedes Element die lokalen Steifigkeitsmatrizen und
+Lastvektoren zu globalen zusammengesetzt. 
+\begin{lyxcode}
+{[}...{]}
+
+blokal~=~det\_J~/~6.0
+
+stmp~=~stmp~/(det\_J{*}6.0)
+
+do~i~=~1,~4~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+l~=~e(ei,~i)~~~~~~~~~~~~~
+
+do~j~=~1,~i~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+r~=~e(ei,~j)~~~~~~~~~~~~~~~~
+
+A(l,~r)~=~A(l,~r)~+~stmp(i,j)~~~~~~~~~~~~~~~~
+
+A(r,~l)~=~A(l,~r)~~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~~~~~
+\end{lyxcode}
+b(l)~=~b(l)~+~blokal(i)~~~~~~~~~~
+
+end~do
+
+{[}...{]}
+\end{lyxcode}
+Es müssen noch die bekannten Randbedingungen eingesetzt werden, sodass
+das Gleichungssystem eindeutig lösbar ist.
+
+\section{Randbedingung}
+
+\subsection{Einsetzen der Randbedingung}
+
+Die Randbedingung ist mit $r=20-2y^{2}+x^{3}y^{2}-xy^{3}+z^{3}x-zx^{3}$gegeben.
+Diese wird durch zwei Schleifen ins Gleichungssystem eingearbeitet:
+\begin{lyxcode}
+do~ki~=~1,~pdim~
+\begin{lyxcode}
+if~(filter(ki)~.lt.~0)~then
+\begin{lyxcode}
+do~j~=~1,~pdim~~~~~~~~~~~~~~
+\begin{lyxcode}
+randwert~=~20.0~-~2.0{*}p(ki,2){*}{*}2~+~p(ki,1){*}{*}3{*}p(ki,2)~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~~~~~~-~p(ki,1){*}p(ki,2){*}{*}3~+~p(ki,3){*}{*}3{*}p(ki,1)~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~~~~~~-~p(ki,3){*}p(ki,1){*}{*}3~~~~~~~~~~~~~~
+
+b(j)~~~~~=~b(j)~-~A(j,~ki)~{*}~randwert~~~~~~~~~~~~~~
+
+A(j,~ki)~=~0.0~~~~~~~~~~~~~~
+
+A(ki,~j)~=~0.0~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~~
+
+A(ki,~ki)~=~1.
+\end{lyxcode}
+end~if~~~~~~~~~~~~~~
+\end{lyxcode}
+end~do
+
+do~ki~=~1,~pdim~~~~~~~~~~
+\begin{lyxcode}
+if~(filter(ki)~.lt.~0)~then~~~~~~~~~~~~~
+\begin{lyxcode}
+b(ki)~=~20.0~-~2.0{*}p(ki,2){*}{*}2~+~p(ki,1){*}{*}3{*}p(ki,2)~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~~-~p(ki,1){*}p(ki,2){*}{*}3~+~p(ki,3){*}{*}3{*}p(ki,1)~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~~-~p(ki,3){*}p(ki,1){*}{*}3~~~~~~~~~~~
+\end{lyxcode}
+end~if~~~~~~~
+\end{lyxcode}
+end~do
+\end{lyxcode}
+\newpage
+
+\section{Löser}
+
+\subsection{Bestimmung und Ausgabe des Fehlers}
+
+Das nun entstandene lineare Gleichungssystem ist eindeutig lösbar
+und kann beispielsweise durch den SOR-Algorithmus gelöst werden. Hierzu
+steht das Unterprogramm \emph{gs\_solve.F} zur Verfügung. Dadurch,
+dass das gewählte Problem so einfach beschaffen ist, kann man nun
+das durch das Programm ermittelte Ergebnis für jeden Knoten mit dem
+theoretischen Wert vergleichen und den entstandenen Fehler ermitteln.
+Dazu wurde eine Schleife ins Unterprogramm \emph{gs\_solve.F} eingefügt:
+\begin{lyxcode}
+open(unit~=~33,~file~=~'delta.dat')~~~~~~~~~~~~~
+
+do~i~=~1,~ndim~~~~~~~~~~~~~~~~~
+\begin{lyxcode}
+u=~20.0~-~2.0{*}p(i,2){*}{*}2~+~p(i,1){*}{*}3{*}p(i,2)~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~-~p(i,1){*}p(i,2){*}{*}3~+~p(i,3){*}{*}3{*}p(i,1)~~~~~~~
+
+\&~~~~~~~~~~~~~~~~~~-~p(i,3){*}p(i,1){*}{*}3~~~~~~~~~~~~~~~~~
+
+delta~=~abs(x(i)~-~u)~~~~~~~~~~~~~~~~~
+
+print{*},'delta:~',~i,~delta~~~~~~~~~~~~~~~~~
+
+write(unit~=~33,~fmt~=~{*})~i,~delta~~~~~~~~~~~~~
+\end{lyxcode}
+end~do~~~~~~~~~~~~~
+
+close(unit~=~33,~status~=~'keep')~~~~~~~~~~~~~
+
+call~system('gnuplot~delta.dem')
+\end{lyxcode}
+Der Absolute Fehler für jeden Knoten wird in die Datei delta.dat geschrieben,
+die Ausgabe erfolgt durch Gnuplot über eine Demodatei \emph{delta.dem:}
+\begin{lyxcode}
+set~term~x11~~~
+
+set~grid~
+
+\#~set~xrange{[}1:262{]}~
+
+\#~set~yrange{[}0.0:0.1{]}~~
+
+set~style~fill~solid~~
+
+set~xlabel~\textquotedbl{}Knotennummer\textquotedbl{}~~
+
+set~ylabel~\textquotedbl{}Absoluter~Fehler\textquotedbl{}~
+
+\#~set~terminal~png~size~800,600~
+
+enhanced~font~\textquotedbl{}Helvetica,~12\textquotedbl{}~\#~
+
+set~output~\textquotedbl{}delta.png\textquotedbl{}~~plot~\textquotedbl{}delta.dat\textquotedbl{}~u~1:2~with~boxes~~
+
+pause~-1~\textquotedbl{}Hit~return~to~continue\textquotedbl{}
+\end{lyxcode}
+\newpage
+
+\section{Schlussbetrachtung}
+
+\subsection{Betrachtung des ermittelten Fehlers}
+
+Die Ausgabe liefert einen Fehler der Größenordnung$10^{-2}$ für innere
+Knoten und $10^{-15}$ für Randknoten und damit im erwarteten Bereich.
+\\
+
+\includegraphics[scale=0.75]{../SWE2_Bericht/delta}
+
+Das Programm müsste nun noch mit feineren Netzen (und auf leistungsstärkeren
+Maschinen) getestet werden. Eine Optimierungsmöglichkeit wäre noch
+das Gleichungssystem zu verkleinern, da je nach Verhältnis von Rand-
+und Innenknoten ein hoher Anteil an Nullzeilen (Zeilen in denen der
+Ausdruck $0=0$ steht) entstehen kann.
+
+\newpage
+\begin{thebibliography}{1}
+\bibitem{key-1}Prof.Dr.rer.nat. Wolfgang Piepke (2018): Anwendung
+der Finite\textendash Elemente\textendash Methode 
+\end{thebibliography}
+
+\end{document}
